@@ -48,8 +48,8 @@ exports.Lexer = class Lexer
     # short-circuiting if any of them succeed. Their order determines precedence:
     # `@literalToken` is the fallback catch-all.
     i = 0
+    lastI = 0
     while c = code.charAt i
-      ###
       i += @identifierToken(i) or
            @commentToken(i)    or
            @whitespaceToken(i) or
@@ -60,22 +60,10 @@ exports.Lexer = class Lexer
            @regexToken(i)      or
            @jsToken(i)         or
            @literalToken(i)
-      ###
-      switch c
-        when ' '    then i += @whitespaceToken(i)
-        when '\t'   then i += @whitespaceToken(i)
-        when '#'    then i += @commentToken(i)
-        when '`'    then i += @jsToken(i)
-        when '"'    then i += @heredocToken(i) or @stringToken(i)
-        when '\''   then i += @heredocToken(i) or @stringToken(i)
-        when '/'    then i += @regexToken(i) or @literalToken(i)
-        else
-            i += @identifierToken(i) or
-                 @commentToken(i) or
-                 @whitespaceToken(i) or
-                 @lineToken(i) or
-                 @numberToken(i) or
-                 @literalToken(i)
+      
+      throw new Error "Infinite loop detected in lexer" if lastI > 0 and lastI is i
+      console.log "POS #{i} = #{c}... [[[#{code.substr lastI, i - lastI}]]]"
+      lastI = i
 
     @closeIndentation()
     return @tokens if opts.rewrite is off
@@ -93,8 +81,9 @@ exports.Lexer = class Lexer
   identifierToken: (lastIndex) ->
     IDENTIFIER.lastIndex = lastIndex
     return 0 unless match = IDENTIFIER.exec @code
+    return 0 if match.index isnt lastIndex
     [input, id, colon] = match
-    console.log "INPUT: #{input} ID: #{id} COLON: #{colon}"
+    #console.log "IDENTIFIER INPUT: #{input} ID: #{id} COLON: #{colon}"
 
     if id is 'own' and @tag() is 'FOR'
       @token 'OWN', id
@@ -151,7 +140,9 @@ exports.Lexer = class Lexer
   numberToken: (lastIndex) ->
     NUMBER.lastIndex = lastIndex
     return 0 unless match = NUMBER.exec @code
+    return 0 if match.index isnt lastIndex
     number = match[0]
+    #console.log "NUMBER #{number}"
     @token 'NUMBER', number
     number.length
 
@@ -162,9 +153,10 @@ exports.Lexer = class Lexer
       when "'"
         SIMPLESTR.lastIndex = lastIndex
         return 0 unless match = SIMPLESTR.exec @code
+        return 0 if match.index isnt lastIndex
         @token 'STRING', (string = match[0]).replace MULTILINER, '\\\n'
       when '"'
-        return 0 unless string = @balancedString @code.substr(lastIndex), '"'
+        return 0 unless string = @balancedString @code.slice(lastIndex), '"'
         if 0 < string.indexOf '#{', 1
           @interpolateString string.slice 1, -1
         else
@@ -172,6 +164,7 @@ exports.Lexer = class Lexer
       else
         return 0
     @line += count string, '\n'
+    #console.log "STRING: #{string}"
     string.length
 
   # Matches heredocs, adjusting indentation to the correct level, as heredocs
@@ -179,6 +172,7 @@ exports.Lexer = class Lexer
   heredocToken: (lastIndex) ->
     HEREDOC.lastIndex = lastIndex
     return 0 unless match = HEREDOC.exec @code
+    return 0 if match.index isnt lastIndex
     heredoc = match[0]
     quote = heredoc.charAt 0
     doc = @sanitizeHeredoc match[2], quote: quote, indent: null
@@ -187,24 +181,27 @@ exports.Lexer = class Lexer
     else
       @token 'STRING', @makeString doc, quote, yes
     @line += count heredoc, '\n'
+    #console.log "HEREDOC #{heredoc}"
     heredoc.length
 
   # Matches and consumes comments.
   commentToken: (lastIndex) ->
     COMMENT.lastIndex = lastIndex
-    return 0 unless match = @code.match COMMENT
+    return 0 unless (match = COMMENT.exec @code) and match.index is lastIndex
     [comment, here] = match
     if here
       @token 'HERECOMMENT', @sanitizeHeredoc here,
         herecomment: true, indent: Array(@indent + 1).join(' ')
       @token 'TERMINATOR', '\n'
     @line += count comment, '\n'
+    #console.log "COMMENT #{comment} (#{comment.length})"
     comment.length
 
   # Matches JavaScript interpolated directly into the source via backticks.
   jsToken: (lastIndex) ->
-    return 0 unless @code.charAt(lastIndex) is '`' and match = JSTOKEN.exec @code
+    return 0 unless @code.charAt(lastIndex) is '`' and (match = JSTOKEN.exec @code) and match.index is lastIndex
     @token 'JS', (script = match[0]).slice 1, -1
+    #console.log "JS #{script}"
     script.length
 
   # Matches regular expression literals. Lexing regular expressions is difficult
@@ -216,6 +213,7 @@ exports.Lexer = class Lexer
     if match = HEREGEX.exec @code
       length = @heregexToken match
       @line += count match[0], '\n'
+      #console.log "HEREGEX #{match[0]}"
       return length
 
     prev = last @tokens
@@ -224,6 +222,7 @@ exports.Lexer = class Lexer
     return 0 unless match = REGEX.exec @code
     [regex] = match
     @token 'REGEX', if regex is '//' then '/(?:)/' else regex
+    #console.log "REGEX #{regex}"
     regex.length
 
   # Matches multiline extended regular expressions.
@@ -263,11 +262,14 @@ exports.Lexer = class Lexer
   # can close multiple indents, so we need to know how far in we happen to be.
   lineToken: (lastIndex) ->
     MULTI_DENT.lastIndex = lastIndex
-    return 0 unless match = MULTI_DENT.exec @code
+    return 0 unless (match = MULTI_DENT.exec @code) # and match.index is lastIndex
+    console.log "LINE #{lastIndex}"
+    console.log match.index
     indent = match[0]
     @line += count indent, '\n'
     prev = last @tokens, 1
     size = indent.length - 1 - indent.lastIndexOf '\n'
+    console.log "SIZE #{size} INDENT: #{@indent}"
     noNewlines = @unfinished(lastIndex)
     if size - @indebt is @indent
       if noNewlines then @suppressNewlines() else @newlineToken()
@@ -313,8 +315,9 @@ exports.Lexer = class Lexer
   # as being "spaced", because there are some cases where it makes a difference.
   whitespaceToken: (lastIndex) ->
     WHITESPACE.lastIndex = lastIndex
-    return 0 unless (match = WHITESPACE.exec @code) or
+    return 0 unless ((match = WHITESPACE.exec @code) and match.index is lastIndex) or
                     (nline = @code.charAt(lastIndex) is '\n')
+    #console.log "WHITESPACE"
     prev = last @tokens
     prev[if match then 'spaced' else 'newLine'] = true if prev
     if match then match[0].length else 0
@@ -337,11 +340,12 @@ exports.Lexer = class Lexer
   # parentheses that indicate a method call from regular parentheses, and so on.
   literalToken: (lastIndex) ->
     OPERATOR.lastIndex = lastIndex
-    if match = OPERATOR.exec @code
+    if (match = OPERATOR.exec @code) and match.index is lastIndex
       [value] = match
       @tagParameters() if CODE.test value
     else
       value = @code.charAt lastIndex
+    #console.log "LITERAL #{value}"
     tag  = value
     prev = last @tokens
     if value is '=' and prev
@@ -520,10 +524,10 @@ exports.Lexer = class Lexer
   unfinished: (lastIndex)  ->
     LINE_CONTINUER.lastIndex = lastIndex
     ASSIGNED.lastIndex = lastIndex
-    LINE_CONTINUER.test(@code) or
+    ((match = LINE_CONTINUER.exec @code) and match.index is lastIndex) or
     (prev = last @tokens, 1) and prev[0] isnt '.' and
       (value = @value()) and not value.reserved and
-      NO_NEWLINE.test(value) and not CODE.test(value) and not ASSIGNED.test(@code)
+      NO_NEWLINE.test(value) and not CODE.test(value) and not ((match = ASSIGNED.exec @code) and match.index is lastIndex)
 
   # Converts newlines for string literals.
   escapeLines: (str, heredoc) ->
@@ -606,11 +610,12 @@ OPERATOR   = /// (
 
 WHITESPACE = /[^\n\S]+/g
 
-COMMENT    = /###([^#][\s\S]*?)(?:###[^\n\S]*|(?:###)?$)|(?:\s*#(?!##[^#]).*)+/g
+COMMENT    = /###([^#][\s\S]*?)(?:###[^\n\S]*|(?:###)?$)|(?:#(?!##[^#]).*)+/g
 
-CODE       = /[-=]>/g
+CODE       = /[-=]>/
 
-MULTI_DENT = /(?:\n[^\n\S]*)+/g
+#nMULTI_DENT = /(?:\n[^\n\S]*)+/g
+MULTI_DENT = /(?:\n([^n\S]*))+/g
 
 SIMPLESTR  = /'[^\\']*(?:\\.[^\\']*)*'/g
 
@@ -636,7 +641,7 @@ HEREGEX      = /// /{3} ([\s\S]+?) /{3} ([imgy]{0,4}) (?!\w) ///g
 HEREGEX_OMIT = /\s+(?:#.*)?/g
 
 # Token cleaning regexes.
-MULTILINER      = /\n/g
+MULTILINER      = /\n/
 
 HEREDOC_INDENT  = /\n+([^\n\S]*)/g
 

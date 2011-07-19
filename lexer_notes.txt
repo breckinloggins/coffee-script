@@ -1,0 +1,43 @@
+- Not only want to make the lexer faster, but easier to maintain
+- Would like a declarative DSL for the lexer, just like the parser has
+- Lexing DSL could look like:
+
+o WHITESPACE,   ' \t',    /full regex/, handleWhitespace
+o COMMENTS,      '#',    ->
+    # Now the Lexer is in the "COMMENTS" state, then these are substates
+    o COMMENT,      '',     /full regex/, handleComment
+    o HERECOMMENT,  '',     /full regex/, handleHereComment
+o IDENTIFIER,   '',       /full regex/, handleIdentifier
+o NUMBER,       '',       /full regex/, handleNumber
+o DASH_OPS,     '-',     ->
+    o MINUS,    '',     //,     handleMinus
+    o ARROW,    '>',    /full regex/, handleArrow
+    ...
+
+
+etc.
+
+- Allows contextual scanning by first recognizing the first character that will put you in a mode
+- The regexes will be automatically run and the matches sent as an args... splat at the end of a handler function
+- Handler functions will have:
+
+    handlerFn -> (context, matches...)
+    Where context has:
+        - The string being scanned
+        - The current character position in the string
+        - The set of tokens already parsed
+        - The last token parsed (as a shortcut)
+        - The current state stack of the lexer (example: COMMENTS)
+        - The token type that was matched (example: HERECOMMENT)
+        - The handler fn can throw an exception on error, which will be reported as a syntax error
+        - The handler fn returns the token generated, true if the lex was handled successfully but did not result in a token (rare), or false if the handler couldn't handle this chunk.  If false, the next rule in the list will be tried??????
+
+- If no handler is specified, the DEFAULT handler will be invoked, which will return a token of the given token type and the first match, if any, from the regex or, if no regex, the character that was the first character for the lexer.
+
+- We should support an AFTER_MATCH handler.  This could be used to affect the indent level, for example.
+
+- Want to figure out really clean but fast ways of handling:
+    - Balanced strings
+    - Interpolated strings
+    - Indents/outdents
+    - ...

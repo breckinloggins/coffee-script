@@ -219,6 +219,7 @@ runTests = (CoffeeScript) ->
       fs.readFile filename, (err, code) ->
         currentFile = filename
         try
+          console.log "Running test #{filename}"
           CoffeeScript.run code.toString(), {filename}
         catch e
           failures.push file: currentFile, error: e
