@@ -14,8 +14,9 @@
 # pushing some extra smarts into the Lexer.
 exports.Lexer = class Lexer
     @rules = {}
+    @others = []
 
-    constructor: (@line = 1, @rules = Lexer.rules) ->
+    constructor: (@line = 1, @rules = Lexer.rules, @others = Lexer.others) ->
         @tokens = []
         @code = ""
         @count = 0
@@ -26,8 +27,10 @@ exports.Lexer = class Lexer
         while c = code.charAt i
             context = {input:code, pos:i, line:@line, char:c, err:null}
             rules = @rules[c]
-            rules = @rules[0] unless rules?
-            (tokens = rule.tokenize(context); break if tokens?) for rule in rules
+            (tokens = rule.tokenize(context); break if tokens?) for rule in rules if rules?
+
+            if not rules? or (rules? and not tokens?)
+                (tokens = rule.tokenize(context); break if tokens?) for rule in @others
 
             throw new Error context.err if context.err?
             throw new Error "Don't know what to do with #{c} on line #{@line} at position #{i}" if not tokens?
@@ -67,7 +70,7 @@ exports.LexerRule = class LexerRule
                 return null
             else
                 return balancedToken
-
+        
         context.pos += match[0].length
         token = [@state, match[0], context.line]
         token = @after(token, context) if @after?
@@ -84,8 +87,7 @@ o = (state, opts) ->
         (Lexer.rules[char] = [] unless Lexer.rules[char]?) for char in chars
         Lexer.rules[char].push new LexerRule(state, chars, regex, balanced, after) for char in chars
     else
-        Lexer.rules[0] = others = [] unless (others = Lexer.rules[0])
-        others.push new LexerRule(state, '', regex, balanced, after)
+        Lexer.others.push new LexerRule(state, '', regex, balanced, after)
 
 
 o 'WHITESPACE',
@@ -114,6 +116,33 @@ o 'JS',
     chars:          '`'
     balanced:       yes
 
+o 'COMPOUND_ASSIGN',
+    chars:          '=-+/*%|&?<>^'
+    regex:          ///
+                    [-+*/%<>&|^!?=]=|                           # "unary" compounds
+                    ([|&<>])\1=|                               # double compounds
+                    >>>=?
+                    |///g
+
+o 'UNARY',
+    chars:          '!~ntd'
+    regex:          ///
+                    !|
+                    ~|
+                    new|
+                    typeof|
+                    delete|
+                    do 
+                    |///g
+
+o 'LOGIC',
+    chars:          '&|^'
+    regex:          /([&|])\1|[&|^]|/g
+
+o 'SHIFT',
+    chars:          '<>'
+    regex:          /<<|>>|>>>|/g
+
 o 'NUMBER',
     regex:          ///
                     0x[\da-f]+ |                                # hex
@@ -128,7 +157,7 @@ o 'IDENTIFIER',
 
 #console.log Lexer.rules
 
-sample = "  ' ababab ' \t\n\t 877 \" \" foo->bar=>bar -  baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4"
+sample = "  ' ababab ' \t\n\t  << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4"
 
 # ANSI Terminal Colors.
 bold  = '\033[0;1m'
