@@ -21,17 +21,21 @@ exports.Lexer = class Lexer
         @code = ""
         @count = 0
 
+        @tokens.last = -> if @length > 0 then @[@length-1] else null
+
     # **tokenize** is the Lexer's main method
     tokenize: (code, opts = {}) ->
         i = if opts.start? then opts.start else 0
+        context = {input: code, pos:i, line:@line, tokens:@tokens, states:[], err:null}
+        
         while c = code.charAt i
-            context = {input:code, pos:i, line:@line, char:c, err:null}
+            context.char = c
             rules = @rules[c]
             (tokens = rule.tokenize(context); break if tokens?) for rule in rules if rules?
 
             if not rules? or (rules? and not tokens?)
                 (tokens = rule.tokenize(context); break if tokens?) for rule in @others
-
+            
             throw new Error context.err if context.err?
             throw new Error "Don't know what to do with #{c} on line #{@line} at position #{i}" if not tokens?
             @line = context.line
@@ -44,12 +48,12 @@ exports.Lexer = class Lexer
      
 
 exports.LexerRule = class LexerRule
-    constructor: (@state, @initialChars, @regex, @balanced = no, @after = null, @fn = null) ->
+    constructor: (@tag, @initialChars, @regex, @balanced = no, @after = null, @fn = null) ->
         @fn = @defaultFn if not @fn?
 
     unbalanced: (char) ->
         regex = new RegExp "#{char}[^#{char}]*#{char}|", "g"
-        new LexerRule(@state, char, regex, no, @after, @fn)
+        new LexerRule(@tag, char, regex, no, @after, @fn)
 
     defaultFn: (context) ->
         match = if @regex?
@@ -72,7 +76,7 @@ exports.LexerRule = class LexerRule
                 return balancedToken
         
         context.pos += match[0].length
-        token = [@state, match[0], context.line]
+        token = [@tag, match[0], context.line]
         token = @after(token, context) if @after?
         [token]
 
@@ -81,19 +85,34 @@ exports.LexerRule = class LexerRule
         tokens
 
 # A DSL similar to the CoffeeScript Grammar DSL for defining lexer rules
-o = (state, opts) ->
+o = (tag, opts = {}) ->
     {chars, regex, after, balanced} = opts
+    chars = tag if not chars? and not regex?
     if chars?
         (Lexer.rules[char] = [] unless Lexer.rules[char]?) for char in chars
-        Lexer.rules[char].push new LexerRule(state, chars, regex, balanced, after) for char in chars
+        Lexer.rules[char].push new LexerRule(tag, chars, regex, balanced, after) for char in chars
     else
-        Lexer.others.push new LexerRule(state, '', regex, balanced, after)
+        Lexer.others.push new LexerRule(tag, '', regex, balanced, after)
 
+###
+COFFEESCRIPT SYNTAX DEFINITION
+###
+# NOTE: Order matters.  It would be nice to determine order automatically based on the length of the regex
+# TODO: Leave off the end | and the g option on the regexes and have the DSL put those in
+# TODO: Nicer syntax for keywords, including automatically setting the initial chars
 
 o 'WHITESPACE',
     chars:          ' \t'
+    regex:          /([ \t])+|/g
+    after:          (token, context) ->
+        # Replace the terminator and whitespace with an INDENT or OUTDENT token if necessary
+        if context.tokens.last()?[0] == 'TERMINATOR' and context.tokens.last()?[1] == '\n' and context.indent isnt token[1].length
+            token[0] = if not context.indent? or context.indent < token[1].length then 'INDENT' else 'OUTDENT'
+            context.indent = token[1] = token[1].length
+            context.tokens.pop()
+        token
 
-o 'NEWLINE',
+o 'TERMINATOR',
     chars:          '\n'
     after:          (token, context) ->  context.line++; token
 
@@ -101,17 +120,16 @@ o 'COMMENT',
     chars:          '#'
     regex:          /###([^#][\s\S]*?)(?:###[^\n\S]*|(?:###)?$)|(?:#(?!##[^#]).*)+|/g
 
-o '(',
-    chars:          '('
+o '('
+o ')'
+o '{'
+o '}'
+o ';',
+    after:          (token, context) -> token[0] = 'TERMINATOR'; token
 
-o ')',
-    chars:          ')'
-
-o '{',
-    chars:          '{'
-
-o '}',
-    chars:          '}'
+o 'SHIFT',
+    chars:          '<>'
+    regex:          /<<|>>|>>>|/g
 
 o 'COMPARE',
     chars:          '=!<>'
@@ -120,6 +138,10 @@ o 'COMPARE',
 o 'CALL',
     chars:          '-='
     regex:          /[-=]>|/g
+
+o 'HEREDOC',
+    chars:          '\'"'
+    regex:          /// ("""|''') ([\s\S]*?) (?:\n[^\n\S]*)? \1 |///g
 
 o 'STRING',
     chars:          '\'"'
@@ -133,7 +155,7 @@ o 'COMPOUND_ASSIGN',
     chars:          '=-+/*%|&?<>^'
     regex:          ///
                     [-+*/%<>&|^!?=]=|                           # "unary" compounds
-                    ([|&<>])\1=|                               # double compounds
+                    ([|&<>])\1=|                                # double compounds
                     >>>=?
                     |///g
 
@@ -151,29 +173,6 @@ o 'UNARY',
 o 'DOUBLES',
     chars:          '-+:'
     regex:          /([-+:])\1|/g
-
-o 'MATH',
-    chars:          '+*/%'
-
-o 'MINUS',
-    chars:          '-'
-
-o 'RELATION',
-    chars:          'io'
-    regex:          ///instanceof|of|in|///g
-
-o 'LOGIC',
-    chars:          '&|^'
-    regex:          /([&|])\1|[&|^]|/g
-
-o 'BOOL',
-    chars:          'tfnu'
-    regex:          ///true|false|null|undefined|///g
-
-o 'SHIFT',
-    chars:          '<>'
-    regex:          /<<|>>|>>>|/g
-
 
 o 'HEREGEX',
     chars:          '/'
@@ -195,6 +194,86 @@ o 'REGEX',
                     / [imgy]{0,4} (?!\w)
                     |///g
 
+o 'MATH',
+    chars:          '+*/%'
+
+o 'MINUS',
+    chars:          '-'
+
+o 'LOGIC',
+    chars:          '&|^'
+    regex:          /([&|])\1|[&|^]|/g
+
+o 'RESERVED',
+    chars:          'cdfvwlein_'
+    regex:          ///
+                    case|
+                    default|
+                    function|
+                    var|
+                    void|
+                    with|
+                    const|
+                    let|
+                    enum|
+                    export|
+                    import|
+                    native|
+                    __hasProp|
+                    __extends|
+                    __slice|
+                    __bind|
+                    __indexOf
+                    |///g
+    after:          (token, context) -> context.err = "Reserved word \"#{token[1]}\" on line #{context.line}"; null
+
+o 'JS_KEYWORDS',
+    chars:          'tfndirbcesw'
+    regex:          ///
+                    this|
+                    new|
+                    delete|
+                    return|
+                    throw|
+                    break|
+                    continue|
+                    debugger|
+                    if|
+                    else|
+                    switch|
+                    for|
+                    while|
+                    try|
+                    catch|
+                    finally|
+                    class|
+                    extends|
+                    super
+                    |///g
+    after:          (token, context) -> token[0] = token[1].toUpperCase(); token
+
+o 'COFFEE_KEYWORDS',
+    chars:          'utlobw'
+    regex:          ///
+                    undefined|
+                    then|
+                    unless|
+                    until|
+                    loop|
+                    of|
+                    by|
+                    when
+                    |///g
+    after:          (token, context) -> token[0] = token[1].toUpperCase(); token
+
+o 'RELATION',
+    chars:          'io'
+    regex:          ///instanceof|of|in|///g
+
+o 'BOOL',
+    chars:          'tfnu'
+    regex:          ///true|false|null|undefined|///g
+
 o 'NUMBER',
     regex:          ///
                     0x[\da-f]+ |                                # hex
@@ -207,9 +286,12 @@ o 'IDENTIFIER',
                     ( [^\n\S]* : (?!:) )?  # Is this a property name?
                     |///g
 
+###
+TESTING
+###
 #console.log Lexer.rules
 
-sample = "  ' ababab ' \t\n\t ///hello /// /something/ ///something \n else///igy 2 <= 3 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block }"
+sample = "  ' ababab '        \t\n\t \n  \n    ///hello /// /something/ ///something \n else///igy 2 <= 3; 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block } \"\"\" a heredoc \"\"\" ''' another \n heredoc ''' #case something\n undefined"
 
 # ANSI Terminal Colors.
 bold  = '\033[0;1m'
