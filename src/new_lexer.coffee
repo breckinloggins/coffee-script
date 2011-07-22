@@ -101,18 +101,31 @@ o 'COMMENT',
     chars:          '#'
     regex:          /###([^#][\s\S]*?)(?:###[^\n\S]*|(?:###)?$)|(?:#(?!##[^#]).*)+|/g
 
+o '(',
+    chars:          '('
+
+o ')',
+    chars:          ')'
+
+o '{',
+    chars:          '{'
+
+o '}',
+    chars:          '}'
+
+o 'COMPARE',
+    chars:          '=!<>'
+    regex:          /// [<>!]=?| ///g
+
 o 'CALL',
     chars:          '-='
     regex:          /[-=]>|/g
-
-o 'MINUS',
-    chars:          '-'
 
 o 'STRING',
     chars:          '\'"'
     balanced:       yes
 
-o 'JS',
+o 'JSTOKEN',
     chars:          '`'
     balanced:       yes
 
@@ -135,13 +148,52 @@ o 'UNARY',
                     do 
                     |///g
 
+o 'DOUBLES',
+    chars:          '-+:'
+    regex:          /([-+:])\1|/g
+
+o 'MATH',
+    chars:          '+*/%'
+
+o 'MINUS',
+    chars:          '-'
+
+o 'RELATION',
+    chars:          'io'
+    regex:          ///instanceof|of|in|///g
+
 o 'LOGIC',
     chars:          '&|^'
     regex:          /([&|])\1|[&|^]|/g
 
+o 'BOOL',
+    chars:          'tfnu'
+    regex:          ///true|false|null|undefined|///g
+
 o 'SHIFT',
     chars:          '<>'
     regex:          /<<|>>|>>>|/g
+
+
+o 'HEREGEX',
+    chars:          '/'
+    regex:          /// /{3} ([\s\S]+?) /{3} ([imgy]{0,4}) (?!\w) |///g
+
+o 'REGEX',
+    chars:          '/'
+    regex:          ///
+                    / (?! [\s=] )                               # Disallow leading whitespace or equals signs
+                    [^ [ / \n \\]*                              # Every other string
+                    (?:
+                        (?: \\[\s\S]                            # Anything escaped
+                        | \[                                    # Character class
+                                [^ \] \n \\ ]*
+                                (?: \\[\s\S] [^ \] \n \\ ]* )*
+                            ]
+                        ) [^ [ / \n \\ ]*
+                    )*
+                    / [imgy]{0,4} (?!\w)
+                    |///g
 
 o 'NUMBER',
     regex:          ///
@@ -157,7 +209,7 @@ o 'IDENTIFIER',
 
 #console.log Lexer.rules
 
-sample = "  ' ababab ' \t\n\t  << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4"
+sample = "  ' ababab ' \t\n\t ///hello /// /something/ ///something \n else///igy 2 <= 3 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block }"
 
 # ANSI Terminal Colors.
 bold  = '\033[0;1m'
