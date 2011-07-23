@@ -5,6 +5,23 @@
 #       [tag, value, lineNumber]
 
 {Rewriter} = require './rewriter'
+fs = require 'fs'
+
+# ANSI Terminal Colors.
+bold  = '\033[0;1m'
+red   = '\033[0;31m'
+green = '\033[0;32m'
+reset = '\033[0m'
+fmt    = (ms) -> " #{bold}#{ "   #{ms}".slice -4 }#{reset} ms"
+
+class SyntaxError extends Error
+    constructor: (@context, @err) ->
+
+    toString: () ->
+        output = "#{red}Syntax Error:#{reset} #{bold}#{@err}#{reset} on column #{bold}#{@context.pos}#{reset}, line #{bold}#{@context.line}#{reset}\n"
+        output += "Around \"#{@context.input.substr(@context.pos - 10, 40).replace("\n", " ")}\"\n"
+        output += "                  #{red}^#{reset}\n\n"
+        output
 
 # The Lexer Class
 # ---------------
@@ -37,13 +54,14 @@ exports.Lexer = class Lexer
                 (tokens = rule.tokenize(context); break if tokens?) for rule in @others
             
             throw new Error context.err if context.err?
-            throw new Error "Don't know what to do with #{c} on line #{@line} at position #{i}" if not tokens?
+            throw new Error new SyntaxError context, "Don't know what to do with #{c}" if not tokens?
             @line = context.line
             @tokens.push token for token in tokens
             i = context.pos
         
-        @count = i
         @tokens
+        return @tokens if opts.rewrite is off
+        (new Rewriter).rewrite @tokens
     
      
 
@@ -52,7 +70,7 @@ exports.LexerRule = class LexerRule
         @fn = @defaultFn if not @fn?
 
     unbalanced: (char) ->
-        regex = new RegExp "#{char}[^#{char}]*#{char}|", "g"
+        regex = new RegExp "#{char}[^\\#{char}]*(?:\\.[^\\#{char}]*)*'|", "g"
         new LexerRule(@tag, char, regex, no, @after, @fn)
 
     defaultFn: (context) ->
@@ -70,7 +88,7 @@ exports.LexerRule = class LexerRule
         if @balanced
             balancedToken = @unbalanced(context.input.charAt context.pos).tokenize(context)
             if not balancedToken?
-                context.err = new Error "Unbalanced #{context.input.charAt context.pos} on column #{context.pos}, line #{context.line}"
+                context.err = new SyntaxError context, "Unbalanced \'#{context.input.charAt context.pos}\'"
                 return null
             else
                 return balancedToken
@@ -90,14 +108,17 @@ o = (tag, opts = {}) ->
     chars = tag if not chars? and not regex?
     if chars?
         (Lexer.rules[char] = [] unless Lexer.rules[char]?) for char in chars
-        Lexer.rules[char].push new LexerRule(tag, chars, regex, balanced, after) for char in chars
+        if regex?
+            Lexer.rules[char].unshift new LexerRule(tag, chars, regex, balanced, after) for char in chars
+        else
+            throw new Error "Ambiguous pattern for '#{char}'" if Lexer.rules[char].length > 0 and not Lexer.rules[char][Lexer.rules[char].length - 1].regex?
+            Lexer.rules[char].push new LexerRule(tag, chars, regex, balanced, after) for char in chars
     else
         Lexer.others.push new LexerRule(tag, '', regex, balanced, after)
 
 ###
 COFFEESCRIPT SYNTAX DEFINITION
 ###
-# NOTE: Order matters.  It would be nice to determine order automatically based on the length of the regex
 # TODO: Leave off the end | and the g option on the regexes and have the DSL put those in
 # TODO: Nicer syntax for keywords, including automatically setting the initial chars
 
@@ -120,10 +141,18 @@ o 'COMMENT',
     chars:          '#'
     regex:          /###([^#][\s\S]*?)(?:###[^\n\S]*|(?:###)?$)|(?:#(?!##[^#]).*)+|/g
 
+#o '\\'
+o ','
+o '@'
+o '='
+o '.'
+o '['
+o ']'
 o '('
 o ')'
 o '{'
 o '}'
+o '?'
 o ';',
     after:          (token, context) -> token[0] = 'TERMINATOR'; token
 
@@ -144,7 +173,11 @@ o 'HEREDOC',
     regex:          /// ("""|''') ([\s\S]*?) (?:\n[^\n\S]*)? \1 |///g
 
 o 'STRING',
-    chars:          '\'"'
+    chars:          '\''
+    balanced:       yes
+
+o 'STRING',
+    chars:          '"'
     balanced:       yes
 
 o 'JSTOKEN',
@@ -208,15 +241,15 @@ o 'RESERVED',
     chars:          'cdfvwlein_'
     regex:          ///
                     case|
-                    default|
+                    default[^\w]|
                     function|
                     var|
                     void|
                     with|
-                    const|
+                    const[^\w]|
                     let|
                     enum|
-                    export|
+                    export[^\w]|
                     import|
                     native|
                     __hasProp|
@@ -225,9 +258,10 @@ o 'RESERVED',
                     __bind|
                     __indexOf
                     |///g
-    after:          (token, context) -> context.err = "Reserved word \"#{token[1]}\" on line #{context.line}"; null
+    after:          (token, context) -> context.err = new SyntaxError context, "Reserved word \"#{token[1]}\" on line #{context.line}"; null
 
 o 'JS_KEYWORDS',
+    # words:    .... instead of chars and regex
     chars:          'tfndirbcesw'
     regex:          ///
                     this|
@@ -291,20 +325,17 @@ TESTING
 ###
 #console.log Lexer.rules
 
-sample = "  ' ababab '        \t\n\t \n  \n    ///hello /// /something/ ///something \n else///igy 2 <= 3; 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block } \"\"\" a heredoc \"\"\" ''' another \n heredoc ''' #case something\n undefined"
-
-# ANSI Terminal Colors.
-bold  = '\033[0;1m'
-red   = '\033[0;31m'
-green = '\033[0;32m'
-reset = '\033[0m'
-fmt    = (ms) -> " #{bold}#{ "   #{ms}".slice -4 }#{reset} ms"
+sample = "  ' ababab '     \t\n\t \n  \n    ///hello /// /something/ ///something \n else///igy 2 <= 3; 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block } \"\"\" a heredoc \"\"\" ''' another \n heredoc ''' #case something\n undefined"
 
 # Time the lexer
 now = Date.now()
 time   = -> ms = -(now - now = Date.now()); fmt ms
 l = new Lexer()
-tokens = l.tokenize(sample)
+if process.argv[2]?
+    tokens = l.tokenize(fs.readFileSync(process.argv[2], "UTF-8"), rewrite:off)
+else
+    tokens = l.tokenize(sample, rewrite: off)
+    
 time_taken = "Lexing occurred in #{time()}"
 console.log tokens
 console.log time_taken
