@@ -18,9 +18,13 @@ class SyntaxError extends Error
     constructor: (@context, @err) ->
 
     toString: () ->
+        startIdx = @context.pos - 10
+        startIdx = 0 unless startIdx >= 0
         output = "#{red}Syntax Error:#{reset} #{bold}#{@err}#{reset} on column #{bold}#{@context.pos}#{reset}, line #{bold}#{@context.line}#{reset}\n"
-        output += "Around \"#{@context.input.substr(@context.pos - 10, 40).replace("\n", " ")}\"\n"
-        output += "                  #{red}^#{reset}\n\n"
+        output += "Around \"#{@context.input.substr(startIdx, 40).replace(/\n/mg, " ")}\"\n"
+        output += "       "
+        (output += " ") for i in [@context.pos..startIdx]
+        output += "#{red}^#{reset}\n\n"
         output
 
 # The Lexer Class
@@ -30,10 +34,9 @@ class SyntaxError extends Error
 # tokens.  Some potential ambiguity in the grammer has been avoided by 
 # pushing some extra smarts into the Lexer.
 exports.Lexer = class Lexer
-    @rules = {}
-    @others = []
 
-    constructor: (@line = 1, @rules = Lexer.rules, @others = Lexer.others) ->
+    constructor: (@line = 1, @rules = {}, @others = []) ->
+        @syntax = ""
         @tokens = []
         @code = ""
         @count = 0
@@ -43,9 +46,9 @@ exports.Lexer = class Lexer
     # **tokenize** is the Lexer's main method
     tokenize: (code, opts = {}) ->
         i = if opts.start? then opts.start else 0
-        context = {input: code, pos:i, line:@line, tokens:@tokens, states:[], err:null}
-        
-        while c = code.charAt i
+        context = {input: code, pos:i, line:@line, tokens:@tokens, states:[], done: no, err:null}
+
+        while (c = code.charAt i) and not context.done
             context.char = c
             rules = @rules[c]
             (tokens = rule.tokenize(context); break if tokens?) for rule in rules if rules?
@@ -54,7 +57,7 @@ exports.Lexer = class Lexer
                 (tokens = rule.tokenize(context); break if tokens?) for rule in @others
             
             throw new Error context.err if context.err?
-            throw new Error new SyntaxError context, "Don't know what to do with #{c}" if not tokens?
+            throw new Error new SyntaxError context, "Don't know what to do with \"#{c}\"" if not tokens?
             @line = context.line
             @tokens.push token for token in tokens
             i = context.pos
@@ -63,6 +66,14 @@ exports.Lexer = class Lexer
         return @tokens if opts.rewrite is off
         (new Rewriter).rewrite @tokens
     
+    copy: ->
+        l = new Lexer
+
+        # NOTE: This won't do if we have dynamically modfiying lexers
+        l.rules = @rules
+        l.others = @others
+
+        l
      
 
 exports.LexerRule = class LexerRule
@@ -70,7 +81,7 @@ exports.LexerRule = class LexerRule
         @fn = @defaultFn if not @fn?
 
     unbalanced: (char) ->
-        regex = new RegExp "#{char}[^\\#{char}]*(?:\\.[^\\#{char}]*)*'|", "g"
+        regex = new RegExp "(?:#{char})([^#{char}]*)(?:#{char})|", "g"
         new LexerRule(@tag, char, regex, no, @after, @fn)
 
     defaultFn: (context) ->
@@ -92,9 +103,12 @@ exports.LexerRule = class LexerRule
                 return null
             else
                 return balancedToken
-        
+       
+        captured = if match[1]? then match[1] else match[0]
+        return null unless captured?
+
         context.pos += match[0].length
-        token = [@tag, match[0], context.line]
+        token = [@tag, captured, context.line]
         token = @after(token, context) if @after?
         [token]
 
@@ -103,24 +117,51 @@ exports.LexerRule = class LexerRule
         tokens
 
 # A DSL similar to the CoffeeScript Grammar DSL for defining lexer rules
+syntaxes = {}
+currentLexer = null
+
+syntax_for = (name) ->
+    l = new Lexer
+    l.syntax = name
+    syntaxes[name] = l
+    currentLexer = l
+
 o = (tag, opts = {}) ->
-    {chars, regex, after, balanced} = opts
+    throw new Error "Please declare a syntax name using 'syntax_for' before defining syntax rules" if not currentLexer?
+    
+    {chars, regex, after, syntax, balanced} = opts
+    
+    if syntax?
+        nextLexer = if typeof syntax is 'string' then syntaxes[syntax] else new Lexer()
+
+        after = (token, context) ->
+            token
+        
+        if typeof syntax is 'function'
+            prevLexer = currentLexer
+            currentLexer = nextLexer
+            syntax()
+            currentLexer = prevLexer
+
     chars = tag if not chars? and not regex?
-    if chars?
-        (Lexer.rules[char] = [] unless Lexer.rules[char]?) for char in chars
+    (currentLexer.rules[char] = [] unless currentLexer.rules[char]?) for char in chars if chars?
+    if chars? then for char in chars
+        rules = currentLexer.rules[char]
         if regex?
-            Lexer.rules[char].unshift new LexerRule(tag, chars, regex, balanced, after) for char in chars
+            rules.unshift new LexerRule(tag, chars, regex, balanced, after)
         else
-            throw new Error "Ambiguous pattern for '#{char}'" if Lexer.rules[char].length > 0 and not Lexer.rules[char][Lexer.rules[char].length - 1].regex?
-            Lexer.rules[char].push new LexerRule(tag, chars, regex, balanced, after) for char in chars
+            throw new Error "Ambiguous pattern for '#{char}'" if rules.length > 0 and not rules[rules.length - 1].regex?
+            rules.push new LexerRule(tag, chars, regex, balanced, after)
     else
-        Lexer.others.push new LexerRule(tag, '', regex, balanced, after)
+        currentLexer.others.push new LexerRule(tag, '', regex, balanced, after)
 
 ###
 COFFEESCRIPT SYNTAX DEFINITION
 ###
 # TODO: Leave off the end | and the g option on the regexes and have the DSL put those in
 # TODO: Nicer syntax for keywords, including automatically setting the initial chars
+
+syntax_for "CoffeeScript"
 
 o 'WHITESPACE',
     chars:          ' \t'
@@ -179,6 +220,17 @@ o 'STRING',
 o 'STRING',
     chars:          '"'
     balanced:       yes
+    syntax:          ->
+        o 'INTERPOLATE',
+            chars:          '#'
+            regex:          /#\{|/g
+            syntax:         "CoffeeScript"
+        o '\\',
+            after:          (token, context) -> token[1]+=context.input[++context.pos]; ++context.pos; token
+        o '#',
+            after:          (token, context) -> context.done = yes
+        o 'DEFAULT',
+            regex:          /(?:[^\\]*)[^"]*|/g
 
 o 'JSTOKEN',
     chars:          '`'
@@ -325,12 +377,12 @@ TESTING
 ###
 #console.log Lexer.rules
 
-sample = "  ' ababab '     \t\n\t \n  \n    ///hello /// /something/ ///something \n else///igy 2 <= 3; 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block } \"\"\" a heredoc \"\"\" ''' another \n heredoc ''' #case something\n undefined"
+sample = "  abc ' ababab '     \t\n\t \n  \n    ///hello /// /something/ ///something \n else///igy 2 <= 3; 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block } \"\"\" a heredoc \"\"\" ''' another \n heredoc ''' #case something\n undefined"
 
 # Time the lexer
+l = syntaxes["CoffeeScript"]
 now = Date.now()
 time   = -> ms = -(now - now = Date.now()); fmt ms
-l = new Lexer()
 if process.argv[2]?
     tokens = l.tokenize(fs.readFileSync(process.argv[2], "UTF-8"), rewrite:off)
 else
