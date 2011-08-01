@@ -78,12 +78,8 @@ exports.Lexer = class Lexer
      
 
 exports.LexerRule = class LexerRule
-    constructor: (@tag, @initialChars, @regex, @balanced = no, @after = null, @fn = null) ->
+    constructor: (@tag, @initialChars, @regex, @after = null, @fn = null) ->
         @fn = @defaultFn if not @fn?
-
-    unbalanced: (char) ->
-        regex = new RegExp "(?:#{char})([^#{char}]*)(?:#{char})|", "g"
-        new LexerRule(@tag, char, regex, no, @after, @fn)
 
     defaultFn: (context) ->
         match = if @regex?
@@ -96,14 +92,6 @@ exports.LexerRule = class LexerRule
             m
 
         return null if context.pos isnt match.index or match[0].length == 0
-        
-        if @balanced
-            balancedToken = @unbalanced(context.input.charAt context.pos).tokenize(context)
-            if not balancedToken?
-                context.err = new SyntaxError context, "Unbalanced \'#{context.input.charAt context.pos}\'"
-                return null
-            else
-                return balancedToken
        
         captured = if match[1]? then match[1] else match[0]
         return null unless captured?
@@ -130,14 +118,13 @@ syntax_for = (name) ->
 o = (tag, opts = {}) ->
     throw new Error "Please declare a syntax name using 'syntax_for' before defining syntax rules" if not currentLexer?
     
-    {chars, regex, after, syntax, keywords, balanced} = opts
+    {chars, regex, after, syntax, keywords} = opts
     
     if keywords?
         # Keywords is a convenient macro so you're not allowed to further specify this stuff
         throw new Error "Cannot specify both keywords and a regex in tag #{tag}" if regex?
         throw new Error "Cannot specify both keywords and chars in tag #{tag}" if chars?
         throw new Error "Cannot specify both keywords and syntax in tag #{tag}" if syntax?
-        throw new Error "Cannot specify both keywords and balanced in tag #{tag}" if balanced?
         throw new Error "Must specify at least one keyword in tag #{tag}" if keywords.length == 0
         
         keywordChars = {}
@@ -149,11 +136,9 @@ o = (tag, opts = {}) ->
         chars = []
         chars.push char for char, _ of keywordChars
         regex = new RegExp(regex, "g")
-        console.log chars
-        console.log regex
 
     if syntax?
-        nextLexer = if typeof syntax is 'string' then syntaxes[syntax] else new Lexer()
+        nextLexer = if typeof syntax is 'string' then new syntaxes[syntax].constructor() else new Lexer()
 
         after = (token, context) ->
             token
@@ -169,12 +154,12 @@ o = (tag, opts = {}) ->
     if chars? then for char in chars
         rules = currentLexer.rules[char]
         if regex?
-            rules.unshift new LexerRule(tag, chars, regex, balanced, after)
+            rules.unshift new LexerRule(tag, chars, regex, after)
         else
             throw new Error "Ambiguous pattern for '#{char}'" if rules.length > 0 and not rules[rules.length - 1].regex?
-            rules.push new LexerRule(tag, chars, regex, balanced, after)
+            rules.push new LexerRule(tag, chars, regex, after)
     else
-        currentLexer.others.push new LexerRule(tag, '', regex, balanced, after)
+        currentLexer.others.push new LexerRule(tag, '', regex, after)
 
 ###
 COFFEESCRIPT SYNTAX DEFINITION
@@ -215,8 +200,8 @@ o ')'
 o '{'
 o '}'
 o '?'
-o ';',
-    after:          (token, context) -> token[0] = 'TERMINATOR'; token
+o ';'
+    after:          (token, context) -> token[0] = if token[1] == ';' then 'TERMINATOR' else token[1]; token
 
 o 'SHIFT',
     chars:          '<>'
@@ -236,11 +221,11 @@ o 'HEREDOC',
 
 o 'STRING',
     chars:          '\''
-    balanced:       yes
+    regex:          /'((?:\\'|[^'])*)'|/g
 
 o 'STRING',
     chars:          '"'
-    balanced:       yes
+    regex:          /"((?:\\"|[^"])*)"|/g
     syntax:          ->
         o 'INTERPOLATE',
             chars:          '#'
@@ -255,7 +240,7 @@ o 'STRING',
 
 o 'JSTOKEN',
     chars:          '`'
-    balanced:       yes
+    regex:          /`((?:\\`|[^`])*)`|/g
 
 o 'COMPOUND_ASSIGN',
     chars:          '=-+/*%|&?<>^'
@@ -357,17 +342,16 @@ o 'JS_KEYWORDS',
     after:          (token, context) -> token[0] = token[1].toUpperCase(); token
 
 o 'COFFEE_KEYWORDS',
-    chars:          'utlobw'
-    regex:          ///
-                    undefined|
-                    then|
-                    unless|
-                    until|
-                    loop|
-                    of|
-                    by|
+    keywords:       """
+                    undefined
+                    then
+                    unless
+                    until
+                    loop
+                    of
+                    by
                     when
-                    |///g
+                    """
     after:          (token, context) -> token[0] = token[1].toUpperCase(); token
 
 o 'RELATION',
@@ -403,6 +387,8 @@ TESTING
 #console.log Lexer.rules
 
 sample = "  abc ' ababab '     \t\n\t \n  \n    ///hello /// /something/ ///something \n else///igy 2 <= 3; 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block } \"\"\" a heredoc \"\"\" ''' another \n heredoc ''' #case something\n undefined ivariable variable"
+
+#sample = "'foo bar \\'baz\\'' \"foo bar\""
 
 # Time the lexer
 l = syntaxes["CoffeeScript"]
