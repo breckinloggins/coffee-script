@@ -14,6 +14,7 @@ green = '\033[0;32m'
 reset = '\033[0m'
 fmt    = (ms) -> " #{bold}#{ "   #{ms}".slice -4 }#{reset} ms"
 
+# Prints syntax errors in a nice format and attempts to show you the approximate position that the error orccured
 class SyntaxError extends Error
     constructor: (@context, @err) ->
 
@@ -30,7 +31,7 @@ class SyntaxError extends Error
 # The Lexer Class
 # ---------------
 #
-# The Lexer class reads a stream of CoffeeScript and divvvies it up into tagged
+# The Lexer class reads a stream of CoffeeScript and divvies it up into tagged
 # tokens.  Some potential ambiguity in the grammer has been avoided by 
 # pushing some extra smarts into the Lexer.
 exports.Lexer = class Lexer
@@ -57,7 +58,7 @@ exports.Lexer = class Lexer
                 (tokens = rule.tokenize(context); break if tokens?) for rule in @others
             
             throw new Error context.err if context.err?
-            throw new Error new SyntaxError context, "Don't know what to do with \"#{c}\"" if not tokens?
+            throw new Error new SyntaxError context, "Don't know what to do with \"#{c}\"" if not tokens? and i == context.pos
             @line = context.line
             @tokens.push token for token in tokens
             i = context.pos
@@ -129,8 +130,28 @@ syntax_for = (name) ->
 o = (tag, opts = {}) ->
     throw new Error "Please declare a syntax name using 'syntax_for' before defining syntax rules" if not currentLexer?
     
-    {chars, regex, after, syntax, balanced} = opts
+    {chars, regex, after, syntax, keywords, balanced} = opts
     
+    if keywords?
+        # Keywords is a convenient macro so you're not allowed to further specify this stuff
+        throw new Error "Cannot specify both keywords and a regex in tag #{tag}" if regex?
+        throw new Error "Cannot specify both keywords and chars in tag #{tag}" if chars?
+        throw new Error "Cannot specify both keywords and syntax in tag #{tag}" if syntax?
+        throw new Error "Cannot specify both keywords and balanced in tag #{tag}" if balanced?
+        throw new Error "Must specify at least one keyword in tag #{tag}" if keywords.length == 0
+        
+        keywordChars = {}
+        regex = ""
+        for keyword in keywords.split("\n")
+            keywordChars[keyword.charAt 0] = null
+            regex += "#{keyword}(?:[^\\S]|$)|"
+
+        chars = []
+        chars.push char for char, _ of keywordChars
+        regex = new RegExp(regex, "g")
+        console.log chars
+        console.log regex
+
     if syntax?
         nextLexer = if typeof syntax is 'string' then syntaxes[syntax] else new Lexer()
 
@@ -227,7 +248,7 @@ o 'STRING',
             syntax:         "CoffeeScript"
         o '\\',
             after:          (token, context) -> token[1]+=context.input[++context.pos]; ++context.pos; token
-        o '#',
+        o '}',
             after:          (token, context) -> context.done = yes
         o 'DEFAULT',
             regex:          /(?:[^\\]*)[^"]*|/g
@@ -290,52 +311,49 @@ o 'LOGIC',
     regex:          /([&|])\1|[&|^]|/g
 
 o 'RESERVED',
-    chars:          'cdfvwlein_'
-    regex:          ///
-                    case|
-                    default[^\w]|
-                    function|
-                    var|
-                    void|
-                    with|
-                    const[^\w]|
-                    let|
-                    enum|
-                    export[^\w]|
-                    import|
-                    native|
-                    __hasProp|
-                    __extends|
-                    __slice|
-                    __bind|
+    keywords:       """
+                    case
+                    default
+                    function
+                    var
+                    void
+                    with
+                    const
+                    let
+                    enum
+                    export
+                    import
+                    native
+                    __hasProp
+                    __extends
+                    __slice
+                    __bind
                     __indexOf
-                    |///g
+                    """
     after:          (token, context) -> context.err = new SyntaxError context, "Reserved word \"#{token[1]}\" on line #{context.line}"; null
 
 o 'JS_KEYWORDS',
-    # words:    .... instead of chars and regex
-    chars:          'tfndirbcesw'
-    regex:          ///
-                    this|
-                    new|
-                    delete|
-                    return|
-                    throw|
-                    break|
-                    continue|
-                    debugger|
-                    if|
-                    else|
-                    switch|
-                    for|
-                    while|
-                    try|
-                    catch|
-                    finally|
-                    class|
-                    extends|
+    keywords:       """
+                    this
+                    new
+                    delete
+                    return
+                    throw
+                    break
+                    continue
+                    debugger
+                    if
+                    else
+                    switch
+                    for
+                    while
+                    try
+                    catch
+                    finally
+                    class
+                    extends
                     super
-                    |///g
+                    """
     after:          (token, context) -> token[0] = token[1].toUpperCase(); token
 
 o 'COFFEE_KEYWORDS',
@@ -353,12 +371,19 @@ o 'COFFEE_KEYWORDS',
     after:          (token, context) -> token[0] = token[1].toUpperCase(); token
 
 o 'RELATION',
-    chars:          'io'
-    regex:          ///instanceof|of|in|///g
+    keywords:       """
+                    instanceof
+                    of
+                    in
+                    """
 
 o 'BOOL',
-    chars:          'tfnu'
-    regex:          ///true|false|null|undefined|///g
+    keywords:       """
+                    true
+                    false
+                    null
+                    undefined
+                    """
 
 o 'NUMBER',
     regex:          ///
@@ -377,7 +402,7 @@ TESTING
 ###
 #console.log Lexer.rules
 
-sample = "  abc ' ababab '     \t\n\t \n  \n    ///hello /// /something/ ///something \n else///igy 2 <= 3; 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block } \"\"\" a heredoc \"\"\" ''' another \n heredoc ''' #case something\n undefined"
+sample = "  abc ' ababab '     \t\n\t \n  \n    ///hello /// /something/ ///something \n else///igy 2 <= 3; 4 != 5 3 >= < > 4 << >> >>> typeof && ^ 877 & | == &= \" \" || ||= ^= foo->bar=>bar - NEW baz -> `some javascript()`\n# and then here comes a long comment\n d b a 32.4 i++ this::that --foo 3+2-4/5%3 in of instanceof true false null undefined (hello) { a block } \"\"\" a heredoc \"\"\" ''' another \n heredoc ''' #case something\n undefined ivariable variable"
 
 # Time the lexer
 l = syntaxes["CoffeeScript"]
