@@ -63,8 +63,8 @@ exports.Lexer = class Lexer
             if not rules? or (rules? and not tokens?)
                 (tokens = rule.tokenize(context); break if tokens?) for rule in @others
             
-            throw new Error context.err if context.err?
-            throw new Error new SyntaxError context, "Don't know what to do with \"#{c}\"" if not tokens? and i == context.pos
+            throw context.err if context.err?
+            throw new SyntaxError context, "Don't know what to do with \"#{c}\"" if not tokens? and i == context.pos
             @line = context.line
             @tokens.push token for token in tokens
             i = context.pos
@@ -241,7 +241,7 @@ o 'SHIFT',
 
 o 'COMPARE',
     chars:          '=!<>'
-    regex:          /// [<>!]=?| ///g
+    regex:          /// [<>]=?|!=| ///g
 
 o 'HEREDOC',
     chars:          '\'"'
@@ -273,6 +273,12 @@ o 'JSTOKEN',
     chars:          '`'
     regex:          /`((?:\\`|[^`])*)`|/g
 
+o 'NUMBER',
+    regex:          ///
+                    0x[\da-f]+ |                                # hex
+                    \d*\.?\d+ (?:e[+-]?\d+)?                    # decimal
+                    |///ig
+
 o 'UNARY',
     chars:          '!~ntd'
     regex:          ///
@@ -290,7 +296,7 @@ o 'UNARY',
 
 o 'DOUBLES',
     chars:          '-+:'
-    regex:          /([-+:])\1|/g
+    regex:          /(([-+:])\2)|/g
 
 o 'HEREGEX',
     chars:          '/'
@@ -320,7 +326,7 @@ o 'MINUS',
 
 o 'LOGIC',
     chars:          '&|^'
-    regex:          /([&|])\1|[&|^]|/g
+    regex:          /(([&|])\2)|[&|^]|/g
 
 o 'RESERVED',
     keywords:       """
@@ -396,12 +402,6 @@ o 'BOOL',
                     undefined
                     """
 
-o 'NUMBER',
-    regex:          ///
-                    0x[\da-f]+ |                                # hex
-                    \d*\.?\d+ (?:e[+-]?\d+)?                    # decimal
-                    |///ig
-
 o 'IDENTIFIER',
     regex:          ///
                     ( [$A-Za-z_\x7f-\uffff][$\w\x7f-\uffff]* )
@@ -435,6 +435,22 @@ test = ->
             ok token[1] == tokens[i][1], "token #{i} value should be '#{tokens[i][1]}' but was '#{token[1]}'"
 
         output
+    
+    syntaxError = (input, debug = false) ->
+        try
+            lex input, [], debug
+        catch err
+            if err instanceof SyntaxError
+                console.log err if debug
+                return
+
+        ok false, "no syntax error was generated for '#{input}'"
+
+    keyword = (input, debug = false) ->
+        lex input, [[ input.toUpperCase(), input, 1 ]], debug
+    
+    identifier = (input, debug = false) ->
+        lex input, [[ 'IDENTIFIER', input, 1 ]], debug
 
     ###
       Tests for individual lexer components
@@ -485,7 +501,6 @@ test = ->
         lex "<=", [['COMPARE','<=',1]]
         lex ">", [['COMPARE','>',1]]
         lex ">=", [['COMPARE','>=',1]]
-        # TODO: What to do with singular '!'?
         lex "!=", [['COMPARE', '!=', 1]]
    
     tests['Heredoc'] = ->
@@ -518,6 +533,126 @@ test = ->
         #lex "<<=", [['COMPOUND_ASSIGN', '<<=', 1]]
         #lex ">>=", [['COMPOUND_ASSIGN', '>>=', 1]]
         #lex ">>>=", [['COMPOUND_ASSIGN', '>>>=', 1]]
+
+    tests['Unary'] = ->
+        lex "!", [['UNARY', '!', 1]]
+        lex "~", [['UNARY', '~', 1]]
+        lex "new", [['UNARY', 'new', 1]]
+        lex "typeof", [['UNARY', 'typeof', 1]]
+        lex "delete", [['UNARY', 'delete', 1]]
+        lex "do", [['UNARY', 'do', 1]]
+
+    tests['Doubles'] = ->
+        lex "--", [['DOUBLES', '--', 1]]
+        lex "++", [['DOUBLES', '++', 1]]
+        lex "::", [['DOUBLES', '::', 1]]
+
+    tests['Regex'] = ->
+        # TODO: The lexer is not capturing regexes and their modifiers properly
+        lex "/// ///", [['HEREGEX', ' ', 1]]
+        lex "/// foo ///", [['HEREGEX', ' foo ', 1]]
+        lex "//", [['REGEX', '//', 1 ]]
+        lex "/foo/", [['REGEX', '/foo/', 1 ]]
+        lex "/ba[rz]/g", [['REGEX', '/ba[rz]/g', 1 ]]
+
+    tests['Math'] = ->
+        # TODO: Handle /
+        lex '+', [['MATH', '+', 1 ]]
+        lex '%', [['MATH', '%', 1 ]]
+        lex '*', [['MATH', '*', 1 ]]
+        lex '-', [['MINUS', '-', 1 ]]
+
+    tests['Logic'] = ->
+        lex '&', [['LOGIC', '&', 1 ]]
+        lex '|', [['LOGIC', '|', 1 ]]
+        lex '^', [['LOGIC', '^', 1 ]]
+        lex '&&', [['LOGIC', '&&', 1 ]]
+        lex '||', [['LOGIC', '||', 1 ]]
+        # TODO: Handle "and", "or", "not", "xor"
+    
+    tests['Reserved'] = ->
+        syntaxError 'case'
+        syntaxError 'default'
+        syntaxError 'function'
+        syntaxError 'var'
+        syntaxError 'void'
+        syntaxError 'with'
+        syntaxError 'const'
+        syntaxError 'let'
+        syntaxError 'enum'
+        syntaxError 'import'
+        syntaxError 'export'
+        syntaxError 'native'
+        syntaxError '__slice'
+        syntaxError '__bind'
+        syntaxError '__extends'
+        syntaxError '__hasProp'
+        syntaxError '__indexOf'
+        
+        # Sanity check to make sure identifiers that include reserved words are valid
+        lex 'defaultcase', [[ 'IDENTIFIER', 'defaultcase', 1 ]]
+
+    tests['Keywords'] = ->
+        keyword 'this'
+        # keyword 'new'     # TODO: Is this a keyword or a unary?
+        # keyword 'delete'  # TODO: Is this a keyword or a unary?
+        keyword 'return'
+        keyword 'throw'
+        keyword 'break'
+        keyword 'continue'
+        keyword 'debugger'
+        keyword 'if'
+        keyword 'else'
+        keyword 'switch'
+        keyword 'for'
+        keyword 'while'
+        keyword 'try'
+        keyword 'catch'
+        keyword 'finally'
+        keyword 'class'
+        keyword 'extends'
+        keyword 'super'
+        keyword 'undefined'
+        keyword 'then'
+        keyword 'unless'
+        keyword 'until'
+        keyword 'loop'
+        keyword 'of'
+        keyword 'by'
+        keyword 'when'
+        
+    tests['Relations'] = ->
+        lex "instanceof", [[ 'RELATION', 'instanceof', 1 ]]
+        # lex "of", [[ 'RELATION', 'of', 1 ]]   # TODO: Is this a relation or a keyword?
+        lex "in", [[ 'RELATION', 'in', 1 ]]
+
+    tests['Bool'] = ->
+        lex "true", [[ 'BOOL', 'true', 1 ]]
+        lex "false", [[ 'BOOL', 'false', 1 ]]
+        lex "null", [['BOOL', 'null', 1 ]]
+        # lex "undefined", [['BOOL', 'undefined', 1 ]]  # TODO: Is this a bool or a keyword?
+        # TODO: 'yes' and 'no'
+    
+    tests['Number'] = ->
+        lex "0", [[ 'NUMBER', '0', 1 ]]
+        lex "10", [[ 'NUMBER', '10', 1 ]]
+        lex "0", [[ 'NUMBER', '0', 1 ]]
+        lex "10.1230", [[ 'NUMBER', '10.1230', 1 ]]
+        lex "0.1234", [[ 'NUMBER', '0.1234', 1 ]]
+        lex "0xABCD", [[ 'NUMBER', '0xABCD', 1 ]]
+        lex "0x12F33CC", [[ 'NUMBER', '0x12F33CC', 1 ]]
+        lex "1337", [[ 'NUMBER', '1337', 1 ]]
+        lex "1e10", [[ 'NUMBER', '1e10', 1 ]]
+        lex "6.2e-3", [[ 'NUMBER', '6.2e-3', 1 ]]
+
+    tests['Identifier'] = ->
+        identifier 'a'
+        identifier 'A'
+        identifier 'a1'
+        # syntaxError '1a'  # TODO: This should generate a syntax error
+        identifier 'points_scored'
+        identifier 'aVeryLongVariableNameThatShouldNeverBeUsedInRealLife'
+        identifier 'SOME_MAGIC_CONSTANT_123'
 
     ###
       Compound tests
