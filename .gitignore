@@ -4,5 +4,7 @@ test.coffee
 parser.output
 test/fixtures/underscore
 test/*.js
+src/*.js
 examples/beautiful_code/parse.coffee
 *.gem
+*.log
