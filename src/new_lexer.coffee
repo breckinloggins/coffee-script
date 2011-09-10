@@ -52,7 +52,7 @@ exports.Lexer = class Lexer
     # **tokenize** is the Lexer's main method
     tokenize: (code, opts = {}) ->
         i = if opts.start? then opts.start else 0
-        context = {input: code, pos:i, line:@line, tokens:@tokens, states:[], done: no, err:null}
+        context = {input: code, pos:i, line:@line, tokens:@tokens, lastMatch:null, done: no, err:null}
         
         while (c = code.charAt i) and not context.done
             break if @endChar? and c is @endChar
@@ -97,6 +97,7 @@ exports.LexerRule = class LexerRule
             m =[context.char]
             m['index'] = context.pos
             m
+        context.lastMatch = match
 
         return null if context.pos isnt match.index or match[0].length == 0
        
@@ -179,6 +180,8 @@ o = (tag, opts = {}) ->
 ###
 COFFEESCRIPT SYNTAX DEFINITION
 ###
+# NOTE: Order matters.  In general, more complex regular expressions involving the same start symbol should appear before
+# simpler ones
 # TODO: Leave off the end | and the g option on the regexes and have the DSL put those in
 # TODO: Nicer syntax for keywords, including automatically setting the initial chars
 
@@ -206,6 +209,14 @@ o 'COMMENT',
 o 'CALL',
     chars:          '-='
     regex:          /[-=]>|/g
+
+o 'COMPOUND_ASSIGN',
+    chars:          '=-+/*%|&?<>^'
+    regex:          ///
+                    [-+*/%&|^!?=]=|                             # "unary" compounds
+                    ([|&<>])\1=|                                # double compounds
+                    >>>=
+                    |///g
 
 #o '\\'
 o ','
@@ -235,6 +246,9 @@ o 'COMPARE',
 o 'HEREDOC',
     chars:          '\'"'
     regex:          /// ("""|''') ([\s\S]*?) (?:\n[^\n\S]*)? \1 |///g
+    after:          (token, context) ->
+        token[1] = context.lastMatch[2]     # Grab the content rather than the starter signal
+        token
 
 o 'STRING',
     chars:          '\''
@@ -258,14 +272,6 @@ o 'STRING',
 o 'JSTOKEN',
     chars:          '`'
     regex:          /`((?:\\`|[^`])*)`|/g
-
-o 'COMPOUND_ASSIGN',
-    chars:          '=-+/*%|&?<>^'
-    regex:          ///
-                    [-+*/%<>&|^!?=]=|                           # "unary" compounds
-                    ([|&<>])\1=|                                # double compounds
-                    >>>=?
-                    |///g
 
 o 'UNARY',
     chars:          '!~ntd'
@@ -481,8 +487,37 @@ test = ->
         lex ">=", [['COMPARE','>=',1]]
         # TODO: What to do with singular '!'?
         lex "!=", [['COMPARE', '!=', 1]]
-    
+   
+    tests['Heredoc'] = ->
+        # TODO: Test sanitization
+        lex "\"\"\"This is a heredoc\"\"\"", [['HEREDOC', 'This is a heredoc', 1]]
+        lex "'''This is a heredoc'''", [['HEREDOC', 'This is a heredoc', 1]]
+        lex "\"\"\"\"\"\"", [['HEREDOC', '', 1]]
+        lex "''''''", [['HEREDOC', '', 1]]
 
+    tests['Strings'] = ->
+        lex "''", [['STRING', '', 1]]
+        #lex '""', [['STRING', '', 1]]
+        lex "'S'", [['STRING', 'S', 1]]
+        #lex '"S"', [['STRING', 'S', 1]], true
+        #lex '"This is a string"', [['STRING', 'This is a string', 1]]
+        # TODO: Fix string state issue and work on interpolation
+        # NOTE: perhaps interpolation can be tested by calling the tests recursively?
+        
+    tests['JsToken'] = ->
+        lex "``", [['JSTOKEN', '', 1]]
+        lex "`foo`", [['JSTOKEN', 'foo', 1]]
+        lex "`1+1 = 2;`", [['JSTOKEN', '1+1 = 2;', 1]]
+    
+    tests['CompoundAssign'] = ->
+        chars = "=-+/*%|&?^"
+        for char in chars
+            lex "#{char}=", [['COMPOUND_ASSIGN', "#{char}=", 1]]
+       
+        # TODO: Fix these
+        #lex "<<=", [['COMPOUND_ASSIGN', '<<=', 1]]
+        #lex ">>=", [['COMPOUND_ASSIGN', '>>=', 1]]
+        #lex ">>>=", [['COMPOUND_ASSIGN', '>>>=', 1]]
 
     ###
       Compound tests
